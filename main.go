@@ -42,10 +42,17 @@ func handleConnection(conn net.Conn) {
 	// 5. Send success/error reply
 	// 6. Relay data between client and target
 
-	_, err := negotiateAuth(conn)
+	method, err := negotiateAuth(conn)
 	if err != nil {
 		log.Printf("negotiateAuth error: %v", err)
 		return
+	}
+ 
+	if method == 0x02 {
+		if err := authenticateUserPass(conn); err != nil {
+			log.Printf("authenticateUserPass error: %v", err)
+			return
+		}
 	}
 }
 
@@ -88,4 +95,40 @@ func negotiateAuth(conn net.Conn) (byte, error) {
 	}
 
 	return selected, nil
+}
+
+func authenticateUserPass(conn net.Conn) error {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return fmt.Errorf("reading auth header: %w", err)
+	}
+
+	if header[0] != 0x01 {
+		return fmt.Errorf("unexpected auth sub-version: %d", header[0])
+	}
+ 
+	uname := make([]byte, int(header[1]))
+	if _, err := io.ReadFull(conn, uname); err != nil {
+		return fmt.Errorf("reading username: %w", err)
+	}
+ 
+	plenBuf := make([]byte, 1)
+	if _, err := io.ReadFull(conn, plenBuf); err != nil {
+		return fmt.Errorf("reading plen: %w", err)
+	}
+
+	passwd := make([]byte, int(plenBuf[0]))
+	if _, err := io.ReadFull(conn, passwd); err != nil {
+		return fmt.Errorf("reading password: %w", err)
+	}
+ 
+	expectedUser := os.Getenv("PROXY_USER")
+	expectedPass := os.Getenv("PROXY_PASS")
+	if string(uname) == expectedUser && string(passwd) == expectedPass {
+		_, err := conn.Write([]byte{0x01, 0x00})
+		return err
+	}
+ 
+	conn.Write([]byte{0x01, 0x01})
+	return fmt.Errorf("invalid credentials for user %q", string(uname))
 }
